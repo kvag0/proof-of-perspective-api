@@ -3,7 +3,8 @@ from flask import Flask, jsonify, request
 from pymongo import MongoClient
 from dotenv import load_dotenv
 from ledger import Ledger
-from bson import ObjectId
+from bson import json_util, ObjectId
+import json
 from time import time
 
 load_dotenv()
@@ -78,7 +79,6 @@ def get_user(username):
     user['_id'] = str(user['_id'])
     return jsonify(user), 200
 
-
 # --- ROTAS DE PROPOSTAS ---
 
 @app.route('/api/proposals', methods=['POST'])
@@ -131,7 +131,6 @@ def get_proposals():
         proposals_list.append(proposal)
     return jsonify(proposals_list), 200
 
-# Rota para um utilizador votar numa proposta
 @app.route('/api/proposals/<proposal_id>/vote', methods=['POST'])
 def vote_on_proposal(proposal_id):
     try:
@@ -175,5 +174,57 @@ def vote_on_proposal(proposal_id):
     except Exception as e:
         return jsonify({'message': 'Erro ao processar o voto', 'error': str(e)}), 500
 
+@app.route('/api/proposals/<proposal_id>/related', methods=['GET'])
+def get_related_proposals(proposal_id):
+    try:
+        # 1. Primeiro, garantimos que a proposta inicial existe.
+        start_proposal = proposals_collection.find_one({"_id": ObjectId(proposal_id)})
+        if not start_proposal:
+            return jsonify({"error": "Proposta inicial não encontrada"}), 404
 
-        
+        # Pega na lista de votantes da proposta inicial.
+        start_voters = start_proposal.get('votes', [])
+        if not start_voters:
+            return jsonify([]), 200 # Retorna lista vazia se não houver votantes para comparar
+
+        # 2. Este é o nosso "Pipeline de Agregação" com o $graphLookup.
+        pipeline = [
+            {
+                # Etapa 1: $graphLookup - A exploração do grafo.
+                '$graphLookup': {
+                    'from': 'proposals',             # Começa a busca na coleção de propostas.
+                    'startWith': start_voters,       # O ponto de partida são os votantes da nossa proposta.
+                    'connectFromField': 'votes',     # "Saia" de um documento pelo seu campo 'votes'.
+                    'connectToField': 'votes',       # "Conecte-se" a outro documento pelo seu campo 'votes'.
+                    'as': 'related_proposals_data',  # Guarde os resultados da travessia aqui.
+                    'maxDepth': 1,                   # Explore apenas um nível de conexão para ser eficiente.
+                }
+            },
+            {
+                # Etapa 2: $match - Filtra os resultados para encontrar apenas as propostas relacionadas.
+                '$match': {
+                    # A condição é que a lista de votantes tenha pelo menos um em comum com a nossa lista inicial.
+                    'votes': {'$in': start_voters},
+                    # E excluímos a própria proposta inicial do resultado.
+                    '_id': {'$ne': ObjectId(proposal_id)}
+                }
+            },
+            {
+                # Etapa 3: $limit - Limita o número de recomendações (boa prática).
+                '$limit': 5
+            }
+        ]
+
+        related_proposals_cursor = proposals_collection.aggregate(pipeline)
+
+        # Converte o cursor do MongoDB para uma lista Python
+        results = list(related_proposals_cursor)
+
+        # Usa o json_util para converter a lista para uma string JSON que lida corretamente com ObjectId
+        json_results = json_util.dumps(results)
+
+        # Carregamos a string JSON de volta para um objeto Python que o Flask pode usar
+        return json.loads(json_results), 200
+
+    except Exception as e:
+        return jsonify({'message': 'Erro ao buscar propostas relacionadas', 'error': str(e)}), 500
