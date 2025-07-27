@@ -130,3 +130,50 @@ def get_proposals():
         proposal['_id'] = str(proposal['_id'])
         proposals_list.append(proposal)
     return jsonify(proposals_list), 200
+
+# Rota para um utilizador votar numa proposta
+@app.route('/api/proposals/<proposal_id>/vote', methods=['POST'])
+def vote_on_proposal(proposal_id):
+    try:
+        data = request.get_json()
+        username = data.get('username')
+
+        if not username:
+            return jsonify({"error": "O nome de utilizador (username) é obrigatório"}), 400
+
+        # Validações de Lógica de Negócio
+        proposal = proposals_collection.find_one({"_id": ObjectId(proposal_id)})
+        if not proposal:
+            return jsonify({"error": "Proposta não encontrada"}), 404
+
+        voter = users_collection.find_one({"username": username})
+        if not voter:
+            return jsonify({"error": "Utilizador votante não encontrado"}), 404
+
+        if proposal['author_username'] == username:
+            return jsonify({"error": "Não é permitido votar na sua própria proposta"}), 403
+
+        if username in proposal['votes']:
+            return jsonify({"error": "Utilizador já votou nesta proposta"}), 409
+
+        # Operação de Escrita
+        proposals_collection.update_one(
+            {"_id": ObjectId(proposal_id)},
+            {"$addToSet": {"votes": username}}
+        )
+
+        ledger_payload = {
+            "action": "VOTE_CAST",
+            "proposal_id": proposal_id,
+            "voter_username": username,
+            "timestamp": time()
+        }
+        ledger.add_entry(ledger_payload)
+
+        return jsonify({"message": f"Voto de '{username}' registado com sucesso!"}), 200
+
+    except Exception as e:
+        return jsonify({'message': 'Erro ao processar o voto', 'error': str(e)}), 500
+
+
+        
