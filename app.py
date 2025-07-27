@@ -6,6 +6,10 @@ from ledger import Ledger
 from bson import json_util, ObjectId
 import json
 from time import time
+import numpy as np
+
+# DEFINIR CATEGORIAS DE CONTEÚDO GLOBAIS
+CONTENT_CATEGORIES = ["Tecnologia", "Arte", "Sociedade", "Ciência", "Desporto"]
 
 load_dotenv()
 
@@ -79,6 +83,50 @@ def get_user(username):
     user['_id'] = str(user['_id'])
     return jsonify(user), 200
 
+@app.route('/api/users/<username>/perspective', methods=['GET'])
+def get_user_perspective(username):
+    # Verifica se o utilizador existe
+    user = users_collection.find_one({"username": username})
+    if not user:
+        return jsonify({"error": "Utilizador não encontrado"}), 404
+
+    # Encontra todas as propostas em que este utilizador votou
+    voted_proposals = list(proposals_collection.find({"votes": username}))
+
+    if not voted_proposals:
+        # Se o utilizador não votou em nada, o seu vetor é neutro (zeros)
+        perspective_vector = np.zeros(len(CONTENT_CATEGORIES)).tolist()
+        return jsonify({
+            "username": username,
+            "vote_count": 0,
+            "perspective_vector": perspective_vector
+        }), 200
+
+    # Calcula o vetor: conta quantos votos foram para cada categoria
+    vote_counts = np.zeros(len(CONTENT_CATEGORIES))
+    for proposal in voted_proposals:
+        try:
+            category_index = CONTENT_CATEGORIES.index(proposal['category'])
+            vote_counts[category_index] += 1
+        except (ValueError, KeyError):
+            # Ignora propostas com categorias inválidas ou em falta
+            continue
+
+    # Normaliza o vetor (para que a sua "magnitude" seja 1)
+    # Isto transforma a contagem bruta numa "direção" de interesse.
+    norm = np.linalg.norm(vote_counts)
+    if norm == 0:
+        normalized_vector = vote_counts # Evita divisão por zero
+    else:
+        normalized_vector = vote_counts / norm
+
+    return jsonify({
+        "username": username,
+        "vote_count": len(voted_proposals),
+        "perspective_vector_raw": vote_counts.tolist(), # Contagem bruta
+        "perspective_vector": normalized_vector.tolist() # Vetor normalizado (a "direção")
+    }), 200
+
 # --- ROTAS DE PROPOSTAS ---
 
 @app.route('/api/proposals', methods=['POST'])
@@ -98,6 +146,7 @@ def create_proposal():
         "title": data['title'],
         "content": data['content'],
         "author_username": data['author_username'],
+        "category": data['category'], # Adiciona a categoria ao documento
         "image_url": data.get('image_url', ''), # O URL da imagem é opcional
         "timestamp": time(),
         "votes": [] # Lista para guardar os votos futuros
@@ -112,7 +161,8 @@ def create_proposal():
         "action": "CREATE_PROPOSAL",
         "proposal_id": str(new_proposal_id),
         "author": data['author_username'],
-        "title": data['title']
+        "title": data['title'],
+        "category": data['category'] 
     }
 
     # 3. Adiciona a entrada ao ledger
