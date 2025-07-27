@@ -1,0 +1,24 @@
+services:
+  api:
+    build: . # Constrói a partir do Dockerfile nesta pasta
+    ports:
+      - "5001:5000" # Mapeia a porta 5001 do seu Mac para a 5000 do contêiner
+    volumes:
+      # Monta o seu código local dentro do contêiner para desenvolvimento em tempo real
+      - .:/app
+    environment:
+      # A URL para conectar ao nosso serviço 'mongo'
+      MONGO_URI: mongodb://mongo:27017/pov_db
+      FLASK_ENV: development # Ativa o modo de debug do Flask para auto-reload
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:latest # Usa a imagem oficial do MongoDB
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:
