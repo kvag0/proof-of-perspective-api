@@ -6,6 +6,7 @@ from ledger import Ledger
 from bson import json_util, ObjectId
 import json
 from time import time
+from scipy.spatial.distance import pdist, squareform
 import numpy as np
 
 # DEFINIR CATEGORIAS DE CONTEÚDO GLOBAIS
@@ -51,6 +52,25 @@ def add_test_entry():
     new_block.pop('_id', None)
     return jsonify(new_block), 201
 
+# --- FUNÇÕES AUXILIARES ---
+
+def _get_perspective_vector(username):
+    """Calcula e retorna o vetor de perspectiva normalizado para um utilizador."""
+    voted_proposals = list(proposals_collection.find({"votes": username}))
+    if not voted_proposals:
+        return np.zeros(len(CONTENT_CATEGORIES))
+
+    vote_counts = np.zeros(len(CONTENT_CATEGORIES))
+    for proposal in voted_proposals:
+        try:
+            category_index = CONTENT_CATEGORIES.index(proposal['category'])
+            vote_counts[category_index] += 1
+        except (ValueError, KeyError):
+            continue
+
+    norm = np.linalg.norm(vote_counts)
+    return vote_counts / norm if norm > 0 else vote_counts
+
 # --- ROTAS DE UTILIZADORES ---
 
 @app.route('/api/users', methods=['POST'])
@@ -85,22 +105,16 @@ def get_user(username):
 
 @app.route('/api/users/<username>/perspective', methods=['GET'])
 def get_user_perspective(username):
-    # Verifica se o utilizador existe
     user = users_collection.find_one({"username": username})
     if not user:
         return jsonify({"error": "Utilizador não encontrado"}), 404
 
-    # Encontra todas as propostas em que este utilizador votou
-    voted_proposals = list(proposals_collection.find({"votes": username}))
+    vector = _get_perspective_vector(username)
 
-    if not voted_proposals:
-        # Se o utilizador não votou em nada, o seu vetor é neutro (zeros)
-        perspective_vector = np.zeros(len(CONTENT_CATEGORIES)).tolist()
-        return jsonify({
-            "username": username,
-            "vote_count": 0,
-            "perspective_vector": perspective_vector
-        }), 200
+    return jsonify({
+        "username": username,
+        "perspective_vector": vector.tolist()
+    }), 200
 
     # Calcula o vetor: conta quantos votos foram para cada categoria
     vote_counts = np.zeros(len(CONTENT_CATEGORIES))
@@ -278,3 +292,58 @@ def get_related_proposals(proposal_id):
 
     except Exception as e:
         return jsonify({'message': 'Erro ao buscar propostas relacionadas', 'error': str(e)}), 500
+
+
+    """Calcula e retorna o vetor de perspectiva normalizado para um utilizador."""
+    voted_proposals = list(proposals_collection.find({"votes": username}))
+    if not voted_proposals:
+        return np.zeros(len(CONTENT_CATEGORIES))
+
+    vote_counts = np.zeros(len(CONTENT_CATEGORIES))
+    for proposal in voted_proposals:
+        try:
+            category_index = CONTENT_CATEGORIES.index(proposal['category'])
+            vote_counts[category_index] += 1
+        except (ValueError, KeyError):
+            continue
+
+    norm = np.linalg.norm(vote_counts)
+    return vote_counts / norm if norm > 0 else vote_counts
+
+@app.route('/api/proposals/<proposal_id>/robustness', methods=['GET'])
+def get_proposal_robustness(proposal_id):
+    try:
+        proposal = proposals_collection.find_one({"_id": ObjectId(proposal_id)})
+        if not proposal:
+            return jsonify({"error": "Proposta não encontrada"}), 404
+
+        voters = proposal.get('votes', [])
+        if len(voters) < 2:
+            # A diversidade só pode ser medida com 2 ou mais votantes
+            return jsonify({
+                "proposal_id": proposal_id,
+                "title": proposal['title'],
+                "voter_count": len(voters),
+                "robustness_score": 0,
+                "message": "São necessários pelo menos 2 votos para calcular a robustez."
+            }), 200
+
+        # 1. Obter o vetor de perspectiva de cada votante
+        voter_vectors = [_get_perspective_vector(voter) for voter in voters]
+
+        # 2. Calcular a matriz de distâncias par a par (pairwise distances)
+        # pdist calcula a distância entre todos os pares de vetores
+        distances = pdist(voter_vectors, 'euclidean')
+
+        # 3. Calcular a média das distâncias para obter o score final
+        robustness_score = np.mean(distances) if len(distances) > 0 else 0
+
+        return jsonify({
+            "proposal_id": proposal_id,
+            "title": proposal['title'],
+            "voter_count": len(voters),
+            "robustness_score": robustness_score
+        }), 200
+
+    except Exception as e:
+        return jsonify({'message': 'Erro ao calcular score de robustez', 'error': str(e)}), 500
